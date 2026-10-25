@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Liquid Layers Modded</title>
+<style>
+  :root { --bg:#10131a; --panel:#1b2030; --ink:#e6e9f2; --accent:#8ab4ff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px system-ui,sans-serif; overflow:hidden; touch-action:none; }
+  #stage { position:fixed; inset:0 0 64px 0; display:flex; align-items:center; justify-content:center; }
+  canvas { background:#0b0e14; border-radius:16px; box-shadow:0 8px 40px #0008; touch-action:none; }
+  #bar { position:fixed; left:0; right:0; bottom:0; height:64px; background:var(--panel); display:flex; gap:8px; align-items:center; padding:0 12px; overflow-x:auto; }
+  button { background:#2a3150; color:var(--ink); border:2px solid transparent; border-radius:14px; padding:8px 12px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  button.on { border-color:var(--accent); background:#34406b; }
+  button:active { transform:scale(.96); }
+  label { display:flex; align-items:center; gap:6px; white-space:nowrap; }
+  input[type=range] { width:90px; }
+  .sep { width:1px; align-self:stretch; background:#ffffff22; margin:10px 2px; }
+  #hint { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:#000a; padding:6px 12px; border-radius:20px; pointer-events:none; transition:opacity .6s; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="hint">Pick an object, then tap the tank to drop it. Drag liquid to stir, drag objects to grab them.</div>
+<div id="bar">
+  <button data-t="ball" class="on">⚽ Ball</button>
+  <button data-t="duck">🦆 Duck</button>
+  <button data-t="crate">📦 Crate</button>
+  <button data-t="boat">⛵ Boat</button>
+  <button data-t="anchor">⚓ Anchor</button>
+  <div class="sep"></div>
+  <label>Tilt <input id="tilt" type="range" min="-90" max="90" value="0"></label>
+  <label>Gravity <input id="grav" type="range" min="0" max="40" value="20"></label>
+  <button id="motion">📱 Motion</button>
+  <button id="clear">Clear objects</button>
+  <button id="reset">Reset</button>
+</div>
+<script src="engine.js"></script>
+<script>
+(() => {
+const GX = 64, GY = 48;
+const world = new LL.World(GX, GY);
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let S = 10, dpr = 1;
+
+function resize() {
+  const st = document.getElementById('stage').getBoundingClientRect();
+  S = Math.max(4, Math.min((st.width - 16) / GX, (st.height - 16) / GY));
+  dpr = window.devicePixelRatio || 1;
+  cv.style.width = GX * S + 'px'; cv.style.height = GY * S + 'px';
+  cv.width = GX * S * dpr; cv.height = GY * S * dpr;
+}
+addEventListener('resize', resize); resize();
+
+/* ---------- UI ---------- */
+let sel = 'ball';
+document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
+  sel = b.dataset.t;
+  document.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x === b));
+});
+const tilt = document.getElementById('tilt'), grav = document.getElementById('grav');
+let motionOn = false;
+tilt.oninput = () => { if (!motionOn) world.tilt = tilt.value * Math.PI / 180; };
+grav.oninput = () => { world.g = grav.value / 1000; };
+document.getElementById('clear').onclick = () => { world.bodies.length = 0; };
+document.getElementById('reset').onclick = () => { world.bodies.length = 0; world.liq.fill(0.42); };
+document.getElementById('motion').onclick = async () => {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+      if (await DeviceOrientationEvent.requestPermission() !== 'granted') return;
+    }
+  } catch (e) { return; }
+  motionOn = !motionOn;
+  document.getElementById('motion').classList.toggle('on', motionOn);
+  if (!motionOn) world.tilt = tilt.value * Math.PI / 180;
+};
+addEventListener('deviceorientation', e => {
+  if (!motionOn || e.gamma == null) return;
+  world.tilt = Math.max(-1.4, Math.min(1.4, e.gamma * Math.PI / 180));
+});
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') tilt.value = Math.max(-90, +tilt.value - 5);
+  else if (e.key === 'ArrowRight') tilt.value = Math.min(90, +tilt.value + 5);
+  else return;
+  tilt.oninput();
+});
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 6000);
+
+/* ---------- pointer: drop / grab / stir ---------- */
+const ptrs = new Map();
+function pos(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) / S, (e.clientY - r.top) / S];
+}
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId);
+  const [x, y] = pos(e);
+  let hit = null;
+  for (let i = world.bodies.length - 1; i >= 0; i--) if (world.bodies[i].contains(x, y)) { hit = world.bodies[i]; break; }
+  if (hit) {
+    const c = Math.cos(-hit.a), s = Math.sin(-hit.a), dx = x - hit.x, dy = y - hit.y;
+    hit.grab = { lx: c * dx - s * dy, ly: s * dx + c * dy, tx: x, ty: y };
+    ptrs.set(e.pointerId, { mode: 'grab', body: hit });
+  } else {
+    ptrs.set(e.pointerId, { mode: 'down', x, y, moved: 0 });
+  }
+});
+cv.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  const [x, y] = pos(e);
+  if (p.mode === 'grab') { p.body.grab.tx = x; p.body.grab.ty = y; return; }
+  const dx = x - p.x, dy = y - p.y;
+  p.moved += Math.abs(dx) + Math.abs(dy);
+  if (p.moved > 0.8) { p.mode = 'stir'; world.stirReq = { x, y, dx, dy, r: 5 }; }
+  p.x = x; p.y = y;
+});
+function up(e) {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  if (p.mode === 'grab') p.body.grab = null;
+  else if (p.mode === 'down') {
+    if (world.bodies.length < 40) {
+      const b = world.add(sel, Math.max(8, Math.min(GX - 9, p.x)), Math.max(6, p.y));
+      b.a = (Math.random() - 0.5) * 0.4;
+    }
+  }
+  ptrs.delete(e.pointerId);
+  if (!ptrs.size) world.stirReq = null;
+}
+cv.addEventListener('pointerup', up);
+cv.addEventListener('pointercancel', up);
+
+/* ---------- drawing ---------- */
+function bodyPath(b) {
+  ctx.beginPath();
+  b.hull.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+  ctx.closePath();
+}
+function drawBody(b) {
+  ctx.save();
+  ctx.translate(b.x, b.y); ctx.rotate(b.a);
+  ctx.translate(b.comX * 0, b.comY * 0);
+  const ox = -(b.comX - polyC(b)[0]) , oy = -(b.comY - polyC(b)[1]);
+  ctx.lineJoin = 'round'; ctx.lineWidth = 0.18;
+  if (b.type === 'ball') {
+    const r = b.radius;
+    const g = ctx.createRadialGradient(-r * .3, -r * .35, r * .1, 0, 0, r);
+    g.addColorStop(0, '#fff'); g.addColorStop(1, '#d6d9e2');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.beginPath();
+    for (let i = 0; i < 5; i++) { const a = i / 5 * 6.283 - 1.57; ctx.lineTo(Math.cos(a) * r * .38, Math.sin(a) * r * .38); }
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#222'; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
+  } else if (b.type === 'duck') {
+    const r = b.radius;
+    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(0, 0.2, r, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(r * .35, -r * .65, r * .5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ff8c1a'; ctx.beginPath(); ctx.moveTo(r * .75, -r * .7); ctx.lineTo(r * 1.25, -r * .55); ctx.lineTo(r * .75, -r * .4); ctx.fill();
+    ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(r * .5, -r * .8, r * .07, 0, 7); ctx.fill();
+  } else if (b.type === 'crate') {
+    ctx.fillStyle = '#b07a3c'; ctx.strokeStyle = '#6b4620';
+    ctx.fillRect(-3, -3, 6, 6); ctx.strokeRect(-3, -3, 6, 6);
+    ctx.beginPath(); ctx.moveTo(-3, -3); ctx.lineTo(3, 3); ctx.moveTo(3, -3); ctx.lineTo(-3, 3); ctx.stroke();
+  } else if (b.type === 'boat') {
+    const cy = b.comY; // art space -> local
+    ctx.translate(0, 0);
+    // hull in local coords (centered on COM)
+    ctx.fillStyle = '#c0392b'; bodyPath(b); ctx.fill();
+    ctx.strokeStyle = '#7a1d14'; ctx.stroke();
+    const top = b.hull[0][1];
+    ctx.strokeStyle = '#5b4636'; ctx.lineWidth = 0.3;
+    ctx.beginPath(); ctx.moveTo(0, top); ctx.lineTo(0, top - 7.5); ctx.stroke();
+    ctx.fillStyle = '#f5f1e6'; ctx.beginPath(); ctx.moveTo(0.4, top - 7); ctx.lineTo(5, top - 0.6); ctx.lineTo(0.4, top - 0.6); ctx.fill();
+    ctx.fillStyle = '#e8e2d0'; ctx.beginPath(); ctx.moveTo(-0.4, top - 6); ctx.lineTo(-3.6, top - 0.6); ctx.lineTo(-0.4, top - 0.6); ctx.fill();
+  } else if (b.type === 'anchor') {
+    ctx.fillStyle = '#6c7a89'; bodyPath(b); ctx.fill();
+    ctx.strokeStyle = '#3b4652'; ctx.stroke();
+  }
+  ctx.restore();
+}
+function polyC(b) { return [0, 0]; }
+
+function frame() {
+  for (let i = 0; i < 2; i++) world.step();
+  ctx.setTransform(dpr * S, 0, 0, dpr * S, 0, 0);
+  ctx.clearRect(0, 0, GX, GY);
+  // tank
+  ctx.fillStyle = '#12161f'; ctx.fillRect(0, 0, GX, GY);
+  // liquid: draw particles as soft discs, one pass per layer
+  const L = world.liq, n = L.n;
+  ctx.globalAlpha = 1;
+  for (let m = 0; m < LL.LAYERS.length; m++) {
+    ctx.fillStyle = LL.LAYERS[m].color;
+    ctx.beginPath();
+    for (let p = 0; p < n; p++) {
+      if (L.mat[p] !== m) continue;
+      ctx.moveTo(L.x[p] + 0.95, L.y[p]);
+      ctx.arc(L.x[p], L.y[p], 0.95, 0, 6.2832);
+    }
+    ctx.fill();
+  }
+  for (const b of world.bodies) drawBody(b);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__world = world;
+})();
+</script>
+</body>
+</html>
