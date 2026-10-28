@@ -27,6 +27,8 @@ Inspired by [Liquid Layers](https://grantkot.com/ll/) by Grant Kot. This is an i
 - `engine.js`: a particle/grid (MPM-flavoured) liquid with five density layers. Rigid bodies sample the fluid at points across their shape to get buoyancy and drag, and push back on the fluid so waves and sloshing move the objects (and objects disturb the liquid).
 - `index.html`: canvas rendering, controls and pointer handling.
 
+The tank is built to fill the whole window: the grid size follows the screen, and the liquid is made of thousands of small particles (`TARGET_PARTICLES` in `index.html`). Each particle's mass is scaled by 2/ppc, so using more, lighter particles gives a finer liquid without changing its density or what floats.
+
 No build step and no dependencies. Open `index.html` or serve the folder as a static site.
 
 ## Adding a new object

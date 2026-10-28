@@ -8,8 +8,8 @@
   :root { --bg:#10131a; --panel:#1b2030; --ink:#e6e9f2; --accent:#8ab4ff; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px system-ui,sans-serif; overflow:hidden; touch-action:none; }
-  #stage { position:fixed; inset:0 0 64px 0; display:flex; align-items:center; justify-content:center; }
-  canvas { background:#000; border-radius:16px; box-shadow:0 8px 40px #0008; touch-action:none; }
+  #stage { position:fixed; inset:0 0 64px 0; background:#000; }
+  canvas { background:#000; display:block; touch-action:none; }
   #bar { position:fixed; left:0; right:0; bottom:0; height:64px; background:var(--panel); display:flex; gap:8px; align-items:center; padding:0 12px; overflow-x:auto; }
   button { background:#2a3150; color:var(--ink); border:2px solid transparent; border-radius:14px; padding:8px 12px; font-size:14px; cursor:pointer; white-space:nowrap; }
   button.on { border-color:var(--accent); background:#34406b; }
@@ -22,7 +22,7 @@
 </head>
 <body>
 <div id="stage"><canvas id="c"></canvas></div>
-<div id="hint">Pick an object, then tap the tank to drop it. Drag liquid to stir, drag objects to grab them.</div>
+<div id="hint">Pick an object, then tap the tank to drop it. Drag the liquid to push it around, drag objects to grab them.</div>
 <div id="bar">
   <button data-t="ball" class="on">⚽ Ball</button>
   <button data-t="duck">🦆 Duck</button>
@@ -39,19 +39,31 @@
 <script src="engine.js"></script>
 <script>
 (() => {
-const GX = 64, GY = 48;
-const world = new LL.World(GX, GY);
+const TARGET_PARTICLES = 14000;  // how many liquid "balls" to aim for (more = finer, but slower)
+const FILL = 0.38, BODY_SCALE = 1.5;
+const stage = document.getElementById('stage');
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-let S = 10, dpr = 1;
+let world, GX, GY, S = 10, dpr = 1, steps = 2, slow = 0;
+const tiltEl = () => document.getElementById('tilt'), gravEl = () => document.getElementById('grav');
 
-function resize() {
-  const st = document.getElementById('stage').getBoundingClientRect();
-  S = Math.max(4, Math.min((st.width - 16) / GX, (st.height - 16) / GY));
-  dpr = window.devicePixelRatio || 1;
-  cv.style.width = GX * S + 'px'; cv.style.height = GY * S + 'px';
-  cv.width = GX * S * dpr; cv.height = GY * S * dpr;
+// Build a tank that exactly fills the screen. The outer 3 cells of the grid are an invisible wall margin.
+function build() {
+  const st = stage.getBoundingClientRect(), W = Math.floor(st.width), H = Math.floor(st.height);
+  const cellsX = Math.round(W / Math.max(6, Math.min(14, W / 150)));
+  S = W / cellsX;
+  const cellsY = Math.max(20, Math.floor(H / S));
+  GX = cellsX + 6; GY = cellsY + 6;
+  const ppc = Math.max(2, Math.min(8, Math.round(TARGET_PARTICLES / (FILL * (GX - 8) * (GY - 8)))));
+  world = new LL.World(GX, GY, { ppc, fill: FILL, bodyScale: BODY_SCALE });
+  world.g = gravEl().value / 1000;
+  world.tilt = tiltEl().value * Math.PI / 180;
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.style.width = W + 'px'; cv.style.height = cellsY * S + 'px';
+  cv.width = Math.round(W * dpr); cv.height = Math.round(cellsY * S * dpr);
+  window.__world = world;
 }
-addEventListener('resize', resize); resize();
+let resizeT = 0;
+addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(build, 250); });
 
 /* ---------- UI ---------- */
 let sel = 'ball';
@@ -59,12 +71,12 @@ document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
   sel = b.dataset.t;
   document.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x === b));
 });
-const tilt = document.getElementById('tilt'), grav = document.getElementById('grav');
+const tilt = tiltEl(), grav = gravEl();
 let motionOn = false;
 tilt.oninput = () => { if (!motionOn) world.tilt = tilt.value * Math.PI / 180; };
 grav.oninput = () => { world.g = grav.value / 1000; };
 document.getElementById('clear').onclick = () => { world.bodies.length = 0; };
-document.getElementById('reset').onclick = () => { world.bodies.length = 0; world.liq.fill(0.42); };
+document.getElementById('reset').onclick = () => { world.bodies.length = 0; world.liq.fill(FILL); };
 document.getElementById('motion').onclick = async () => {
   try {
     if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
@@ -91,7 +103,7 @@ setTimeout(() => document.getElementById('hint').style.opacity = 0, 6000);
 const ptrs = new Map();
 function pos(e) {
   const r = cv.getBoundingClientRect();
-  return [(e.clientX - r.left) / S, (e.clientY - r.top) / S];
+  return [(e.clientX - r.left) / S + 3, (e.clientY - r.top) / S + 3];
 }
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId);
@@ -112,7 +124,7 @@ cv.addEventListener('pointermove', e => {
   if (p.mode === 'grab') { p.body.grab.tx = x; p.body.grab.ty = y; return; }
   const dx = x - p.x, dy = y - p.y;
   p.moved += Math.abs(dx) + Math.abs(dy);
-  if (p.moved > 0.8) { p.mode = 'stir'; world.stirReq = { x, y, dx, dy, r: 5 }; }
+  if (p.moved > 0.8) { p.mode = 'stir'; world.stirReq = { x, y, dx, dy, r: 85 / S }; }
   p.x = x; p.y = y;
 });
 function up(e) {
@@ -120,7 +132,7 @@ function up(e) {
   if (p.mode === 'grab') p.body.grab = null;
   else if (p.mode === 'down') {
     if (world.bodies.length < 40) {
-      const b = world.add(sel, Math.max(8, Math.min(GX - 9, p.x)), Math.max(6, p.y));
+      const b = world.add(sel, Math.max(13, Math.min(GX - 14, p.x)), Math.max(9, p.y));
       b.a = (Math.random() - 0.5) * 0.4;
     }
   }
@@ -131,19 +143,18 @@ cv.addEventListener('pointerup', up);
 cv.addEventListener('pointercancel', up);
 
 /* ---------- drawing ---------- */
-function bodyPath(b) {
-  ctx.beginPath();
-  b.hull.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
-  ctx.closePath();
-}
 function drawBody(b) {
+  const k = b.sc, R = b.radius / k;
+  const bodyPath = () => {
+    ctx.beginPath();
+    b.hull.forEach((p, i) => i ? ctx.lineTo(p[0] / k, p[1] / k) : ctx.moveTo(p[0] / k, p[1] / k));
+    ctx.closePath();
+  };
   ctx.save();
-  ctx.translate(b.x, b.y); ctx.rotate(b.a);
-  ctx.translate(b.comX * 0, b.comY * 0);
-  const ox = -(b.comX - polyC(b)[0]) , oy = -(b.comY - polyC(b)[1]);
+  ctx.translate(b.x, b.y); ctx.rotate(b.a); ctx.scale(k, k);
   ctx.lineJoin = 'round'; ctx.lineWidth = 0.18;
   if (b.type === 'ball') {
-    const r = b.radius;
+    const r = R;
     const g = ctx.createRadialGradient(-r * .3, -r * .35, r * .1, 0, 0, r);
     g.addColorStop(0, '#fff'); g.addColorStop(1, '#d6d9e2');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
@@ -152,7 +163,7 @@ function drawBody(b) {
     ctx.closePath(); ctx.fill();
     ctx.strokeStyle = '#222'; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
   } else if (b.type === 'duck') {
-    const r = b.radius;
+    const r = R;
     ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(0, 0.2, r, 0, 7); ctx.fill();
     ctx.beginPath(); ctx.arc(r * .35, -r * .65, r * .5, 0, 7); ctx.fill();
     ctx.fillStyle = '#ff8c1a'; ctx.beginPath(); ctx.moveTo(r * .75, -r * .7); ctx.lineTo(r * 1.25, -r * .55); ctx.lineTo(r * .75, -r * .4); ctx.fill();
@@ -162,48 +173,46 @@ function drawBody(b) {
     ctx.fillRect(-3, -3, 6, 6); ctx.strokeRect(-3, -3, 6, 6);
     ctx.beginPath(); ctx.moveTo(-3, -3); ctx.lineTo(3, 3); ctx.moveTo(3, -3); ctx.lineTo(-3, 3); ctx.stroke();
   } else if (b.type === 'boat') {
-    const cy = b.comY; // art space -> local
-    ctx.translate(0, 0);
-    // hull in local coords (centered on COM)
-    ctx.fillStyle = '#c0392b'; bodyPath(b); ctx.fill();
+    ctx.fillStyle = '#c0392b'; bodyPath(); ctx.fill();
     ctx.strokeStyle = '#7a1d14'; ctx.stroke();
-    const top = b.hull[0][1];
+    const top = b.hull[0][1] / k;
     ctx.strokeStyle = '#5b4636'; ctx.lineWidth = 0.3;
     ctx.beginPath(); ctx.moveTo(0, top); ctx.lineTo(0, top - 7.5); ctx.stroke();
     ctx.fillStyle = '#f5f1e6'; ctx.beginPath(); ctx.moveTo(0.4, top - 7); ctx.lineTo(5, top - 0.6); ctx.lineTo(0.4, top - 0.6); ctx.fill();
     ctx.fillStyle = '#e8e2d0'; ctx.beginPath(); ctx.moveTo(-0.4, top - 6); ctx.lineTo(-3.6, top - 0.6); ctx.lineTo(-0.4, top - 0.6); ctx.fill();
   } else if (b.type === 'anchor') {
-    ctx.fillStyle = '#6c7a89'; bodyPath(b); ctx.fill();
+    ctx.fillStyle = '#6c7a89'; bodyPath(); ctx.fill();
     ctx.strokeStyle = '#3b4652'; ctx.stroke();
   }
   ctx.restore();
 }
-function polyC(b) { return [0, 0]; }
 
 function frame() {
-  for (let i = 0; i < 2; i++) world.step();
-  ctx.setTransform(dpr * S, 0, 0, dpr * S, 0, 0);
-  ctx.clearRect(0, 0, GX, GY);
-  // tank
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, GX, GY);
-  // liquid: draw particles as soft discs, one pass per layer
-  const L = world.liq, n = L.n;
-  ctx.globalAlpha = 1;
+  const t0 = performance.now();
+  for (let i = 0; i < steps; i++) world.step();
+  // the visible tank is the grid minus its 3-cell wall margin on every side
+  ctx.setTransform(dpr * S, 0, 0, dpr * S, -3 * S * dpr, -3 * S * dpr);
+  ctx.fillStyle = '#000'; ctx.fillRect(3, 3, GX - 6, GY - 6);
+  // liquid: every particle is drawn at its real size (same as its hit size), with a thin black rim like the original
+  const L = world.liq, n = L.n, rd = L.spacing * 0.56;
+  ctx.strokeStyle = '#000'; ctx.lineWidth = L.spacing * 0.16;
   for (let m = 0; m < LL.LAYERS.length; m++) {
     ctx.fillStyle = LL.LAYERS[m].color;
     ctx.beginPath();
     for (let p = 0; p < n; p++) {
       if (L.mat[p] !== m) continue;
-      ctx.moveTo(L.x[p] + 0.42, L.y[p]);
-      ctx.arc(L.x[p], L.y[p], 0.42, 0, 6.2832);
+      ctx.moveTo(L.x[p] + rd, L.y[p]);
+      ctx.arc(L.x[p], L.y[p], rd, 0, 6.2832);
     }
-    ctx.fill();
+    ctx.fill(); ctx.stroke();
   }
   for (const b of world.bodies) drawBody(b);
+  // slow machines: drop to one physics step per frame instead of stuttering
+  if (steps === 2 && performance.now() - t0 > 22) { if (++slow > 20) steps = 1; } else if (slow > 0) slow--;
   requestAnimationFrame(frame);
 }
+build();
 requestAnimationFrame(frame);
-window.__world = world;
 })();
 </script>
 </body>

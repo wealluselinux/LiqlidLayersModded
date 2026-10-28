@@ -5,7 +5,7 @@
 (function (root) {
 'use strict';
 
-const REST = 2.0;
+const REST = 2.0; // default particles per grid cell at rest (kept for the exported API)
 
 // bottom -> top. m = mass per particle, heavier layers sink.
 // Colors match the original Liquid Layers: red at the bottom, then orange, green, blue on top.
@@ -17,9 +17,13 @@ const LAYERS = [
 ];
 
 class Liquid {
-  constructor(GX, GY, layers) {
+  // ppc = particles per grid cell. More particles = finer, lighter "balls" for the same fluid:
+  // each particle's mass is scaled by 2/ppc so the liquid's density (and so buoyancy) never changes.
+  constructor(GX, GY, layers, ppc, fraction) {
     this.GX = GX; this.GY = GY; this.layers = layers;
-    const maxP = GX * GY * 2;
+    this.ppc = ppc || REST; this.rest = this.ppc;
+    this.spacing = 1 / Math.sqrt(this.ppc);
+    const maxP = Math.ceil(GX * GY * this.ppc);
     this.maxP = maxP; this.n = 0;
     this.x = new Float32Array(maxP); this.y = new Float32Array(maxP);
     this.u = new Float32Array(maxP); this.v = new Float32Array(maxP);
@@ -32,19 +36,19 @@ class Liquid {
     this.nu = new Float32Array(N); this.nv = new Float32Array(N);
     this.ax = new Float32Array(N); this.ay = new Float32Array(N);
     this.flag = new Uint8Array(N); this.act = new Int32Array(N); this.na = 0;
-    this.layerM = Float32Array.from(layers.map(l => l.m));
+    this.layerM = Float32Array.from(layers.map(l => l.m * REST / this.ppc));
     this.k = 2.6;        // stiffness
     this.visc = 0.05;    // viscosity
     this.flip = 0.9;     // FLIP/PIC blend
     this.maxSpeed = 0.9; // cells per time unit
-    this.fill(0.42);
+    this.fill(fraction || 0.42);
   }
 
   // Fill the tank bottom with equal-thickness layers (heaviest at the bottom).
   fill(fraction) {
     const GX = this.GX, GY = this.GY, L = this.layers.length;
     const x0 = 3.6, x1 = GX - 4.6, yBot = GY - 4.6, yTop = yBot - (GY - 8) * fraction;
-    const s = Math.SQRT1_2;
+    const s = this.spacing, jit = 0.04 * s / Math.SQRT1_2;
     this.n = 0;
     let row = 0;
     for (let y = yBot; y > yTop; y -= s, row++) {
@@ -53,8 +57,8 @@ class Liquid {
       const off = (row & 1) ? s / 2 : 0;
       for (let x = x0 + off; x < x1; x += s) {
         const p = this.n++;
-        this.x[p] = x + (Math.random() - 0.5) * 0.04;
-        this.y[p] = y + (Math.random() - 0.5) * 0.04;
+        this.x[p] = x + (Math.random() - 0.5) * jit;
+        this.y[p] = y + (Math.random() - 0.5) * jit;
         this.u[p] = 0; this.v[p] = 0; this.mat[p] = li;
       }
     }
@@ -127,7 +131,7 @@ class Liquid {
           dudx -= uu * gxv; dudy -= uu * gyv; dvdx -= vv * gxv; dvdy -= vv * gyv;
         }
       }
-      let pr = k * (dens - REST) / REST;
+      let pr = k * (dens - this.rest) / this.rest;
       if (pr > 2.5) pr = 2.5; else if (pr < 0) pr *= 0.25;
       const sxx = -pr + 2 * mu * dudx, syy = -pr + 2 * mu * dvdy, sxy = mu * (dudy + dvdx);
       const x = X[p], y = Y[p];
@@ -240,7 +244,7 @@ class Liquid {
     for (let p = 0; p < this.n; p++) {
       const ex = X[p] - x, ey = Y[p] - y, d2 = ex * ex + ey * ey;
       if (d2 > r2) continue;
-      const w = 1 - Math.sqrt(d2) / r, ww = w * w * 0.12;
+      const w = 1 - Math.sqrt(d2) / r, ww = w * w * 0.5;
       let u = U[p] + dx * ww, v = V[p] + dy * ww;
       const s = u * u + v * v;
       if (s > ms * ms) { const q = ms / Math.sqrt(s); u *= q; v *= q; }
@@ -287,24 +291,25 @@ function circlePoly(r, n) {
 // dens = mass per area (fluid is ~2.0 at the top layer .. ~4.0 at the bottom).
 // com = centre-of-mass offset from the centroid (positive y = lower, makes it self-right).
 const SPECS = {
-  ball:   { poly: circlePoly(2.0, 16), dens: 0.45, com: [0, 0.0] },
+  ball:   { poly: circlePoly(3.2, 18), dens: 0.80, com: [0, 0.0] },
   duck:   { poly: circlePoly(3.0, 18), dens: 0.60, com: [0, 1.1] },
   crate:  { poly: [[-3, -3], [3, -3], [3, 3], [-3, 3]], dens: 1.5, com: [0, 0] },
-  boat:   { poly: [[-7, -2.5], [7, -2.5], [4.5, 2.5], [-4.5, 2.5]], mass: 38, com: [0, 1.3] },
+  boat:   { poly: [[-7, -2.5], [7, -2.5], [4.5, 2.5], [-4.5, 2.5]], dens: 0.45, com: [0, 1.3] },
   anchor: { poly: [[0, -3.2], [1.8, -1], [3.2, 2.6], [0, 1.4], [-3.2, 2.6], [-1.8, -1]], dens: 6.0, com: [0, 0.4] },
 };
 
 class Body {
-  constructor(type, x, y) {
+  constructor(type, x, y, sc) {
     const spec = SPECS[type];
-    this.type = type;
-    const art = spec.poly;
+    sc = sc || 1;
+    this.type = type; this.sc = sc;
+    const art = spec.poly.map(p => [p[0] * sc, p[1] * sc]);
     const area = Math.abs(polyArea(art));
     const cen = polyCentroid(art);
-    this.comX = cen[0] + spec.com[0]; this.comY = cen[1] + spec.com[1]; // COM in art space
+    this.comX = cen[0] + spec.com[0] * sc; this.comY = cen[1] + spec.com[1] * sc; // COM in art space
     this.hull = art.map(p => [p[0] - this.comX, p[1] - this.comY]);
     this.area = area;
-    this.mass = spec.mass || spec.dens * area;
+    this.mass = spec.mass ? spec.mass * sc * sc : spec.dens * area;
     // samples for fluid coupling
     let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9, rad = 0;
     for (const p of this.hull) {
@@ -313,7 +318,7 @@ class Body {
       rad = Math.max(rad, Math.hypot(p[0], p[1]));
     }
     this.radius = rad;
-    const step = 0.8, sm = [];
+    const step = 0.8 * Math.max(1, sc * 0.75), sm = [];
     for (let sy = miny + step / 2; sy < maxy; sy += step)
       for (let sx = minx + step / 2; sx < maxx; sx += step)
         if (inPoly(this.hull, sx, sy)) sm.push(sx, sy);
@@ -432,9 +437,11 @@ function collideBodies(bodies) {
 }
 
 class World {
-  constructor(GX, GY) {
+  constructor(GX, GY, opts) {
+    opts = opts || {};
     this.GX = GX; this.GY = GY;
-    this.liq = new Liquid(GX, GY, LAYERS);
+    this.bodyScale = opts.bodyScale || 1;
+    this.liq = new Liquid(GX, GY, LAYERS, opts.ppc, opts.fill);
     this.bodies = [];
     this.g = 0.02;      // gravity strength
     this.tilt = 0;      // radians
@@ -444,7 +451,7 @@ class World {
     this._tmp = { rho: 0, dens: 0, u: 0, v: 0 };
   }
   add(type, x, y) {
-    const b = new Body(type, x, y);
+    const b = new Body(type, x, y, this.bodyScale);
     this.bodies.push(b);
     return b;
   }
@@ -453,7 +460,7 @@ class World {
     if (this.stirReq) {
       const r = this.stirReq;
       this.liq.stir(r.x, r.y, r.dx, r.dy, r.r);
-      r.dx = 0; r.dy = 0;
+      r.dx *= 0.85; r.dy *= 0.85; // keep carrying the liquid for a few steps after the pointer moves
     }
     this.liq.prepare(grx, gry, dt);
     for (const b of this.bodies) b.couple(this.liq, grx, gry, dt, this._tmp);
