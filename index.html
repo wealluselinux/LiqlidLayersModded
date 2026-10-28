@@ -9,7 +9,7 @@
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px system-ui,sans-serif; overflow:hidden; touch-action:none; }
   #stage { position:fixed; inset:0 0 64px 0; display:flex; align-items:center; justify-content:center; }
-  canvas { background:#0b0e14; border-radius:16px; box-shadow:0 8px 40px #0008; touch-action:none; }
+  canvas { background:#000; border-radius:16px; box-shadow:0 8px 40px #0008; touch-action:none; }
   #bar { position:fixed; left:0; right:0; bottom:0; height:64px; background:var(--panel); display:flex; gap:8px; align-items:center; padding:0 12px; overflow-x:auto; }
   button { background:#2a3150; color:var(--ink); border:2px solid transparent; border-radius:14px; padding:8px 12px; font-size:14px; cursor:pointer; white-space:nowrap; }
   button.on { border-color:var(--accent); background:#34406b; }
@@ -185,7 +185,7 @@ function frame() {
   ctx.setTransform(dpr * S, 0, 0, dpr * S, 0, 0);
   ctx.clearRect(0, 0, GX, GY);
   // tank
-  ctx.fillStyle = '#12161f'; ctx.fillRect(0, 0, GX, GY);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, GX, GY);
   // liquid: draw particles as soft discs, one pass per layer
   const L = world.liq, n = L.n;
   ctx.globalAlpha = 1;
@@ -194,8 +194,8 @@ function frame() {
     ctx.beginPath();
     for (let p = 0; p < n; p++) {
       if (L.mat[p] !== m) continue;
-      ctx.moveTo(L.x[p] + 0.95, L.y[p]);
-      ctx.arc(L.x[p], L.y[p], 0.95, 0, 6.2832);
+      ctx.moveTo(L.x[p] + 0.42, L.y[p]);
+      ctx.arc(L.x[p], L.y[p], 0.42, 0, 6.2832);
     }
     ctx.fill();
   }

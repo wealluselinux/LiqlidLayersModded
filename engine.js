@@ -8,12 +8,12 @@
 const REST = 2.0;
 
 // bottom -> top. m = mass per particle, heavier layers sink.
+// Colors match the original Liquid Layers: red at the bottom, then orange, green, blue on top.
 const LAYERS = [
-  { m: 2.00, color: '#6f3bd6' },
-  { m: 1.65, color: '#2f6fe4' },
-  { m: 1.35, color: '#1fb8c9' },
-  { m: 1.12, color: '#3ec46d' },
-  { m: 1.00, color: '#f2c230' },
+  { m: 2.00, color: '#e02838' },
+  { m: 1.50, color: '#f8a000' },
+  { m: 1.20, color: '#00e030' },
+  { m: 1.00, color: '#0078f0' },
 ];
 
 class Liquid {
@@ -287,7 +287,7 @@ function circlePoly(r, n) {
 // dens = mass per area (fluid is ~2.0 at the top layer .. ~4.0 at the bottom).
 // com = centre-of-mass offset from the centroid (positive y = lower, makes it self-right).
 const SPECS = {
-  ball:   { poly: circlePoly(3.2, 18), dens: 0.80, com: [0, 0.0] },
+  ball:   { poly: circlePoly(2.0, 16), dens: 0.45, com: [0, 0.0] },
   duck:   { poly: circlePoly(3.0, 18), dens: 0.60, com: [0, 1.1] },
   crate:  { poly: [[-3, -3], [3, -3], [3, 3], [-3, 3]], dens: 1.5, com: [0, 0] },
   boat:   { poly: [[-7, -2.5], [7, -2.5], [4.5, 2.5], [-4.5, 2.5]], mass: 38, com: [0, 1.3] },
